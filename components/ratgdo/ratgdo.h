@@ -153,6 +153,8 @@ public:
     unsigned long door_start_moving { 0 };
     float door_start_position { DOOR_POSITION_UNKNOWN };
     float door_move_delta { DOOR_DELTA_UNKNOWN };
+    float move_to_target_ { -1 }; // pending move-to-position target; -1 = none
+    uint32_t move_to_target_at_ { 0 }; // millis() when the target was set (staleness bound)
     uint16_t position_sync_remaining_ { 0 };
 
     single_observable<LightState> light_state { LightState::UNKNOWN };
@@ -221,6 +223,7 @@ public:
     void door_action(DoorAction action);
     void ensure_door_action(DoorAction action, uint32_t delay = 1500);
     void door_move_to_position(float position);
+    void arm_move_target_stop(DoorState direction, uint32_t untracked_lag_ms = 0);
     void set_door_position(float door_position) { this->door_position = door_position; }
     void set_opening_duration(float duration);
     void set_closing_duration(float duration);
@@ -520,9 +523,10 @@ namespace scheduler_ids {
         TIMEOUT_DOOR_ACTION,
         TIMEOUT_MOVE_TO_POSITION,
         TIMEOUT_CLEAR_MOTION,
-        // Shared by RATGDOComponent and Secplus1 — safe because only one
-        // protocol is compiled at a time (#ifdef PROTOCOL_SECPLUSV1) and
-        // both use ratgdo_ as the scheduler owner.
+        // RATGDOComponent's on_door_state_ expiry only. Secplus1 has its own
+        // ID (TIMEOUT_SECPLUS1_DOOR_STATE_EXPIRY below): the two OnceCallbacks
+        // containers are distinct, and sharing one timer let either side's
+        // cancel/replace strip the other's staleness protection.
         TIMEOUT_DOOR_STATE_EXPIRY,
         TIMEOUT_PRESENCE_DETECT_WINDOW,
         TIMEOUT_CLEAR_PRESENCE,
@@ -530,6 +534,14 @@ namespace scheduler_ids {
         TIMEOUT_SYNC,
         INTERVAL_STATUS_WATCHDOG,
         TIMEOUT_ENCODER_STOPPED,
+        TIMEOUT_SECPLUS1_STOP_RETRY,
+        TIMEOUT_SECPLUS1_STOP_VERIFY,
+        // Secplus1's OnceCallbacks expiry gets its OWN ID: the component and
+        // the protocol each keep a separate on_door_state_ container, and
+        // sharing one expiry timer lets either side's cancel/replace strip
+        // the other's staleness protection (reachable via the move-to-position
+        // moving-away path).
+        TIMEOUT_SECPLUS1_DOOR_STATE_EXPIRY,
     };
 } // namespace scheduler_ids
 

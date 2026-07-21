@@ -2,20 +2,25 @@ import esphome.codegen as cg
 from esphome.components import light
 import esphome.config_validation as cv
 from esphome.const import CONF_OUTPUT_ID  # New in 2023.5
-from esphome.types import ConfigType
 
-from .. import RATGDO_CLIENT_SCHMEA, ratgdo_ns, register_ratgdo_child, validate_unique
+from .. import RATGDO_CLIENT_SCHMEA, ratgdo_ns, register_ratgdo_child
 
 DEPENDENCIES = ["ratgdo"]
+
+# Track if light has been used
+USED_LIGHTS: set[str] = set()
 
 RATGDOLightOutput = ratgdo_ns.class_(
     "RATGDOLightOutput", light.LightOutput, cg.Component
 )
 
 
-def validate_single_light(config: ConfigType) -> ConfigType:
+def validate_single_light(config):
     """Validate that only one RATGDO light is configured."""
-    validate_unique("light", "ratgdo_light", "Only one RATGDO light is allowed")
+    light_id = "ratgdo_light"
+    if light_id in USED_LIGHTS:
+        raise cv.Invalid("Only one RATGDO light is allowed")
+    USED_LIGHTS.add(light_id)
     return config
 
 

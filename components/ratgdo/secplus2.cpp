@@ -63,11 +63,9 @@ namespace secplus2 {
 
     void Secplus2::dump_config()
     {
-        ESP_LOGCONFIG(TAG,
-            "  Rolling Code Counter: %" PRIu32 "\n"
-            "  Client ID: %" PRIu64 "\n"
-            "  Protocol: SEC+ v2",
-            *this->rolling_code_counter_, this->client_id_);
+        ESP_LOGCONFIG(TAG, "  Rolling Code Counter: %d", *this->rolling_code_counter_);
+        ESP_LOGCONFIG(TAG, "  Client ID: %d", this->client_id_);
+        ESP_LOGCONFIG(TAG, "  Protocol: SEC+ v2");
     }
 
     void Secplus2::on_shutdown()
@@ -399,7 +397,6 @@ namespace secplus2 {
             this->ratgdo_->received(to_DoorState(cmd.nibble, DoorState::UNKNOWN));
             this->ratgdo_->received(to_LightState((cmd.byte2 >> 1) & 1, LightState::UNKNOWN));
             this->ratgdo_->received(to_LockState((cmd.byte2 & 1), LockState::UNKNOWN));
-            // ESP_LOGD(TAG, "Obstruction: reading from byte2, bit2, status=%d", ((byte2 >> 2) & 1) == 1);
             this->ratgdo_->received(to_ObstructionState((cmd.byte1 >> 6) & 1, ObstructionState::UNKNOWN));
             this->ratgdo_->received(to_LearnState((cmd.byte2 >> 5) & 1, LearnState::UNKNOWN));
         } else if (cmd.type == CommandType::LIGHT) {
@@ -466,7 +463,7 @@ namespace secplus2 {
     {
         auto cmd = static_cast<uint64_t>(command.type);
         uint64_t fixed = ((cmd & ~0xff) << 24) | this->client_id_;
-        uint32_t data = (static_cast<uint64_t>(command.byte2) << 24) | (static_cast<uint64_t>(command.byte1) << 16) | (static_cast<uint64_t>(command.nibble) << 8) | (cmd & 0xff);
+        uint32_t data = (static_cast<uint32_t>(command.byte2) << 24) | (static_cast<uint32_t>(command.byte1) << 16) | (static_cast<uint32_t>(command.nibble) << 8) | (static_cast<uint32_t>(cmd) & 0xff);
 
         ESP_LOG2(TAG, "[%ld] Encode for transmit rolling=%07" PRIx32 " fixed=%010" PRIx64 " data=%08" PRIx32, millis(), *this->rolling_code_counter_, fixed, data);
         encode_wireline(*this->rolling_code_counter_, fixed, data, packet);
@@ -508,7 +505,7 @@ namespace secplus2 {
 
     void Secplus2::set_rolling_code_counter(uint32_t counter)
     {
-        ESP_LOGV(TAG, "Set rolling code counter to %" PRIu32, counter);
+        ESP_LOGV(TAG, "Set rolling code counter to %d", counter);
         this->rolling_code_counter_ = counter;
     }
 

@@ -36,6 +36,16 @@ namespace esphome::ratgdo {
 using namespace protocol;
 
 static const char* const TAG = "ratgdo";
+
+// How long a move-to-position target stays valid while waiting for the
+// requested direction of travel to confirm (dances, command latency).
+static constexpr uint32_t MOVE_TARGET_INTENT_MS = 15000;
+// Travel time already spent inside the unconfirmed window when the stop timer
+// is armed at a motion confirm — the estimator only starts tracking at the
+// confirm, so the anchor position lags physical reality by roughly the
+// confirm latency. Deliberately errs EARLY: an undershoot stops mid-travel;
+// an overshoot races a limit, where a late toggle can restart the door.
+static constexpr uint32_t ARM_CONFIRM_LAG_COMP_MS = 1000;
 static constexpr int SYNC_DELAY = 1000;
 // Door state updates arrive over UART every ~200-400ms during movement.
 // 2 seconds gives ample margin for slow openers while still expiring
@@ -258,6 +268,13 @@ void RATGDOComponent::received(const DoorState door_state)
 #endif
                 this->schedule_door_position_sync();
         }
+#ifdef RATGDO_USE_ENCODER
+        // Encoder builds track position live through the confirm window — no
+        // untracked-travel compensation needed.
+        this->arm_move_target_stop(DoorState::OPENING, this->encoder_sensor_ != nullptr ? 0 : ARM_CONFIRM_LAG_COMP_MS);
+#else
+        this->arm_move_target_stop(DoorState::OPENING, ARM_CONFIRM_LAG_COMP_MS);
+#endif
     } else if (door_state == DoorState::CLOSING) {
         // door started closing
         if (prev_door_state == DoorState::OPENING) {
@@ -276,6 +293,11 @@ void RATGDOComponent::received(const DoorState door_state)
 #endif
                 this->schedule_door_position_sync();
         }
+#ifdef RATGDO_USE_ENCODER
+        this->arm_move_target_stop(DoorState::CLOSING, this->encoder_sensor_ != nullptr ? 0 : ARM_CONFIRM_LAG_COMP_MS);
+#else
+        this->arm_move_target_stop(DoorState::CLOSING, ARM_CONFIRM_LAG_COMP_MS);
+#endif
     } else if (door_state == DoorState::STOPPED) {
 #ifdef RATGDO_USE_ENCODER
         if (encoder_sensor_ == nullptr)
@@ -291,12 +313,25 @@ void RATGDOComponent::received(const DoorState door_state)
 #endif
     } else if (door_state == DoorState::OPEN) {
         this->door_position = 1.0;
+        // A limit latch ends any pending move-to-position: without position
+        // feedback, positioning is only reliable when travel starts from a
+        // limit, so a detour that reached one abandons the command rather
+        // than fighting the opener (best-effort by design on Security+1).
+        if (this->move_to_target_ >= 0) {
+            ESP_LOGD(TAG, "Move-to-position %.2f abandoned at open limit", this->move_to_target_);
+            this->move_to_target_ = -1;
+        }
         this->cancel_position_sync_callbacks();
 #ifdef RATGDO_USE_ENCODER
         enc_intended_dir_ = 0; // open intent satisfied
 #endif
     } else if (door_state == DoorState::CLOSED) {
         this->door_position = 0.0;
+        // See the OPEN branch: a limit latch abandons any pending target.
+        if (this->move_to_target_ >= 0) {
+            ESP_LOGD(TAG, "Move-to-position %.2f abandoned at closed limit", this->move_to_target_);
+            this->move_to_target_ = -1;
+        }
         this->cancel_position_sync_callbacks();
 #ifdef RATGDO_USE_ENCODER
         enc_intended_dir_ = 0; // close intent satisfied
@@ -348,7 +383,7 @@ void RATGDOComponent::received(const ObstructionState obstruction_state)
 {
     if (!this->flags_.obstruction_sensor_detected) {
         ESP_LOGD(TAG, "Obstruction: state=%s",
-            LOG_STR_ARG(ObstructionState_to_string(*this->obstruction_state)));
+            LOG_STR_ARG(ObstructionState_to_string(obstruction_state)));
 
         this->obstruction_state = obstruction_state;
         // This isn't very fast to update, but its still better
@@ -360,21 +395,21 @@ void RATGDOComponent::received(const ObstructionState obstruction_state)
 void RATGDOComponent::received(const MotorState motor_state)
 {
     ESP_LOGD(TAG, "Motor: state=%s",
-        LOG_STR_ARG(MotorState_to_string(*this->motor_state)));
+        LOG_STR_ARG(MotorState_to_string(motor_state)));
     this->motor_state = motor_state;
 }
 
 void RATGDOComponent::received(const ButtonState button_state)
 {
     ESP_LOGD(TAG, "Button state=%s",
-        LOG_STR_ARG(ButtonState_to_string(*this->button_state)));
+        LOG_STR_ARG(ButtonState_to_string(button_state)));
     this->button_state = button_state;
 }
 
 void RATGDOComponent::received(const MotionState motion_state)
 {
     ESP_LOGD(TAG, "Motion: %s",
-        LOG_STR_ARG(MotionState_to_string(*this->motion_state)));
+        LOG_STR_ARG(MotionState_to_string(motion_state)));
     this->motion_state = motion_state;
     if (motion_state == MotionState::DETECTED) {
         this->set_timeout(TIMEOUT_CLEAR_MOTION, 3000,
@@ -586,8 +621,8 @@ void RATGDOComponent::obstruction_loop()
     // are tricky because the voltage drops slowly when falling asleep and is high
     // without pulses when waking up
 
-    // If at least 3 low pulses are counted within 50ms, the door is awake, not
-    // obstructed and we don't have to check anything else
+    // If more than PULSES_LOWER_LIMIT (i.e. 4+) low pulses are counted within
+    // 50ms, the door is awake, not obstructed and we don't have to check anything else
 
     constexpr uint32_t CHECK_PERIOD = 50;
     constexpr uint32_t PULSES_LOWER_LIMIT = 3;
@@ -726,6 +761,8 @@ void RATGDOComponent::cancel_door_state_expiry()
 
 void RATGDOComponent::door_open()
 {
+    this->move_to_target_ = -1; // explicit command supersedes any pending position target
+    this->cancel_timeout(TIMEOUT_MOVE_TO_POSITION);
     if (*this->door_state == DoorState::OPENING) {
         return; // gets ignored by opener
     }
@@ -759,6 +796,8 @@ void RATGDOComponent::door_open()
 
 void RATGDOComponent::door_close()
 {
+    this->move_to_target_ = -1; // explicit command supersedes any pending position target
+    this->cancel_timeout(TIMEOUT_MOVE_TO_POSITION);
     if (*this->door_state == DoorState::CLOSING) {
         // Door is already heading in the right direction. If the user explicitly
         // requested CLOSE (e.g., after a partial move_to_position), remember the intent
@@ -823,14 +862,24 @@ void RATGDOComponent::door_close()
 
 void RATGDOComponent::door_stop()
 {
+    this->move_to_target_ = -1; // explicit command supersedes any pending position target
+    this->cancel_timeout(TIMEOUT_MOVE_TO_POSITION);
     if (*this->door_state != DoorState::OPENING && *this->door_state != DoorState::CLOSING) {
-        ESP_LOGW(TAG, "The door is not moving.");
-        return;
+        // Motion may be commanded but not yet confirmed (Security+1 confirms
+        // take ~1s) — forward anyway. The protocols treat an at-rest stop as
+        // a harmless no-op (Security+1 defers it and lets it expire), so a
+        // user's stop is never silently dropped in the unconfirmed window.
+        ESP_LOGD(TAG, "Stop requested without confirmed motion; forwarding to protocol");
     }
     this->door_action(DoorAction::STOP);
 }
 
-void RATGDOComponent::door_toggle() { this->door_action(DoorAction::TOGGLE); }
+void RATGDOComponent::door_toggle()
+{
+    this->move_to_target_ = -1; // explicit command supersedes any pending position target
+    this->cancel_timeout(TIMEOUT_MOVE_TO_POSITION);
+    this->door_action(DoorAction::TOGGLE);
+}
 
 void RATGDOComponent::door_action(DoorAction action)
 {
@@ -839,6 +888,12 @@ void RATGDOComponent::door_action(DoorAction action)
         this->door_action_delayed = DoorActionDelayed::YES;
         this->set_timeout(TIMEOUT_DOOR_ACTION, *this->closing_delay * 1000, [this, action] {
             this->door_action_delayed = DoorActionDelayed::NO;
+            if (this->move_to_target_ >= 0) {
+                // The intent clock must not include the user-configured closing
+                // delay, or a legal delay >= the staleness bound would expire
+                // the target before motion can even start.
+                this->move_to_target_at_ = millis();
+            }
             this->protocol_->door_action(action);
         });
     } else {
@@ -849,9 +904,103 @@ void RATGDOComponent::door_action(DoorAction action)
 #endif
 }
 
+// Arm the move-to-position stop timer once the requested direction of travel
+// has actually confirmed. Called from received(OPENING/CLOSING). Anchoring the
+// timer to motion start (rather than command time) keeps command-to-motion
+// latency and Security+1's multi-toggle dances — which include real physical
+// motion — from corrupting the timing model (a fixed timer stopped a 0.90
+// request at 0.78 on hardware).
+void RATGDOComponent::arm_move_target_stop(DoorState direction, uint32_t untracked_lag_ms)
+{
+    if (this->move_to_target_ < 0) {
+        return;
+    }
+    if (*this->obstruction_state == ObstructionState::OBSTRUCTED) {
+        // A safety reversal is in progress; never arrest it with a position
+        // stop — and don't let an older armed timer arrest it either. The
+        // target dies at whichever limit the reversal reaches (see
+        // received(OPEN/CLOSED)), and the staleness/toward-target gates here
+        // bound it on every re-arm until then.
+        this->cancel_timeout(TIMEOUT_MOVE_TO_POSITION);
+        return;
+    }
+    if (millis() - this->move_to_target_at_ > MOVE_TARGET_INTENT_MS) {
+        // Stale intent from a move that never got going; don't let it stop an
+        // unrelated, later motion.
+        ESP_LOGW(TAG, "Move-to-position target %.2f expired before motion started", this->move_to_target_);
+        this->move_to_target_ = -1;
+        return;
+    }
+    float remaining = this->move_to_target_ - *this->door_position;
+    bool toward_target = (direction == DoorState::OPENING) ? remaining > 0 : remaining < 0;
+    if (!toward_target) {
+        // e.g. Security+1's open-from-stopped dance moves briefly the wrong
+        // way first; keep the target and wait for the requested direction.
+        return;
+    }
+    float duration = direction == DoorState::OPENING ? *this->opening_duration : *this->closing_duration;
+    if (duration == 0) {
+        this->move_to_target_ = -1;
+        return;
+    }
+    float magnitude = remaining > 0 ? remaining : -remaining;
+    uint32_t operation_time = (uint32_t)(1000 * duration * magnitude + 0.5f);
+    // Subtract the travel already spent in the unconfirmed window (see
+    // ARM_CONFIRM_LAG_COMP_MS). untracked_lag_ms is 0 on the re-aim path,
+    // where the estimator was tracking the whole time.
+    operation_time = operation_time > untracked_lag_ms ? operation_time - untracked_lag_ms : 1;
+    ESP_LOGD(TAG, "Motion confirmed at %.2f; stopping in %.1fs to reach %.2f",
+        *this->door_position, operation_time / 1000.0, this->move_to_target_);
+    this->set_timeout(TIMEOUT_MOVE_TO_POSITION, operation_time, [this] {
+        if (this->move_to_target_ < 0) {
+            return; // target was superseded after this timer was armed
+        }
+        this->move_to_target_ = -1;
+#ifdef RATGDO_USE_ENCODER
+        flags_.enc_position_stop_pending = true;
+#endif
+        this->door_action(DoorAction::STOP);
+    });
+}
+
 void RATGDOComponent::door_move_to_position(float position)
 {
-    if (*this->door_state == DoorState::OPENING || *this->door_state == DoorState::CLOSING) {
+    auto delta = position - *this->door_position;
+    bool moving = *this->door_state == DoorState::OPENING || *this->door_state == DoorState::CLOSING;
+
+    if (delta < 0.01f && delta > -0.01f) { // epsilon: avoid a near-zero (truncated-to-0ms) move
+        if (moving) {
+            // Passing the target right now — stop here.
+            this->move_to_target_ = -1;
+            this->cancel_timeout(TIMEOUT_MOVE_TO_POSITION);
+#ifdef RATGDO_USE_ENCODER
+            flags_.enc_position_stop_pending = true;
+#endif
+            this->door_action(DoorAction::STOP);
+        } else {
+            this->move_to_target_ = -1; // latest command supersedes any stale pending target
+            ESP_LOGD(TAG, "Door is already at position %.2f", position);
+        }
+        return;
+    }
+
+    if (moving) {
+        bool toward_target = (*this->door_state == DoorState::OPENING) == (delta > 0);
+        if (toward_target) {
+            // Already moving toward the target — just (re)aim the stop timer
+            // from the current position. Stopping and restarting would cost a
+            // multi-toggle dance on Security+1.
+            this->door_move_delta = delta;
+            this->move_to_target_ = position;
+            this->move_to_target_at_ = millis();
+            this->arm_move_target_stop(*this->door_state);
+            return;
+        }
+        // Moving away from the target: stop first, then restart toward it.
+        this->cancel_timeout(TIMEOUT_MOVE_TO_POSITION);
+#ifdef RATGDO_USE_ENCODER
+        flags_.enc_position_stop_pending = true;
+#endif
         this->door_action(DoorAction::STOP);
         this->on_door_state([this, position](DoorState s) {
             if (s == DoorState::STOPPED) {
@@ -861,22 +1010,23 @@ void RATGDOComponent::door_move_to_position(float position)
         return;
     }
 
-    auto delta = position - *this->door_position;
-    if (delta == 0) {
-        ESP_LOGD(TAG, "Door is already at position %.2f", position);
-        return;
-    }
-
     auto duration = delta > 0 ? *this->opening_duration : -*this->closing_duration;
     if (duration == 0) {
         ESP_LOGW(TAG, "I don't know duration, ignoring move to position");
         return;
     }
 
-    auto operation_time = 1000 * duration * delta;
+    // Kill any pending stop timer from a previous command — this new command
+    // owns the timeout ID from here on.
+    this->cancel_timeout(TIMEOUT_MOVE_TO_POSITION);
+
+    // Motion-anchored stop: the stop timer is NOT armed here. It is armed by
+    // received(OPENING/CLOSING) via arm_move_target_stop() when the requested
+    // direction actually confirms, computed from the position at that moment.
     this->door_move_delta = delta;
-    ESP_LOGD(TAG, "Moving to position %.2f in %.1fs", position,
-        operation_time / 1000.0);
+    this->move_to_target_ = position;
+    this->move_to_target_at_ = millis();
+    ESP_LOGD(TAG, "Moving to position %.2f (stop timed from motion start)", position);
 
 #ifdef RATGDO_USE_ENCODER
     // Record intended direction so on_encoder_update can detect a wrong-way GDO response.
@@ -885,13 +1035,6 @@ void RATGDOComponent::door_move_to_position(float position)
     enc_intended_dir_ = (delta > 0) ? 1 : -1;
 #endif
     this->door_action(delta > 0 ? DoorAction::OPEN : DoorAction::CLOSE);
-    this->set_timeout(TIMEOUT_MOVE_TO_POSITION, operation_time,
-        [this] {
-#ifdef RATGDO_USE_ENCODER
-            flags_.enc_position_stop_pending = true;
-#endif
-            this->door_action(DoorAction::STOP);
-        });
 }
 
 void RATGDOComponent::cancel_position_sync_callbacks()

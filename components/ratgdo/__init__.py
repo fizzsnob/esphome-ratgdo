@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from esphome import automation, pins
 import esphome.codegen as cg
@@ -20,7 +20,7 @@ RATGDO = ratgdo_ns.class_("RATGDOComponent", cg.Component)
 
 @dataclass
 class RATGDOData:
-    """Per-run state: observable subscriber counts and used entity types."""
+    """Track observable subscriber counts for compile-time sizing."""
 
     door_state: int = 0
     door_action_delayed: int = 0
@@ -28,7 +28,6 @@ class RATGDOData:
     vehicle_detected: int = 0
     vehicle_arriving: int = 0
     vehicle_leaving: int = 0
-    used_types: dict[str, set[str]] = field(default_factory=dict)
 
 
 def _get_data() -> RATGDOData:
@@ -59,19 +58,6 @@ def subscribe_vehicle_arriving() -> None:
 
 def subscribe_vehicle_leaving() -> None:
     _get_data().vehicle_leaving += 1
-
-
-def validate_unique(kind: str, value: str, message: str) -> None:
-    """Raise cv.Invalid if (kind, value) was already seen in this validation run.
-
-    State lives in CORE.data (cleared by CORE.reset() between runs) rather than
-    a module-level global, which would leak across validation runs in
-    long-lived processes like the dashboard's `esphome vscode --ace` loop.
-    """
-    used = _get_data().used_types.setdefault(kind, set())
-    if value in used:
-        raise cv.Invalid(message)
-    used.add(value)
 
 
 @coroutine_with_priority(CoroPriority.FINAL)

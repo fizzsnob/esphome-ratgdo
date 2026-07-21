@@ -142,6 +142,8 @@ namespace secplus1 {
         optional<CommandType> pop_pending_tx();
         bool do_transmit_if_pending();
         void enqueue_command_pair(CommandType cmd);
+        void schedule_stop_retry(uint8_t tries, DoorState await_state = DoorState::UNKNOWN);
+        void schedule_stop_verify(DoorState direction, uint8_t attempts);
         void transmit_byte(uint32_t value);
 
         void toggle_light();
@@ -159,7 +161,11 @@ namespace secplus1 {
         uint32_t wall_panel_emulation_start_ { 0 };
         uint32_t last_rx_ { 0 };
         uint32_t last_tx_ { 0 };
+        uint32_t light_command_at_ { 0 }; // millis() of last light command (read-back suppression)
+        uint32_t stop_requested_at_ { 0 }; // millis() when a deferred stop was armed
+        uint32_t door_state_confirmed_at_ { 0 }; // millis() of last two-poll door-state confirmation
         uint32_t last_status_query_ { 0 };
+        uint32_t door_reading_run_started_ { 0 }; // millis() when the current identical-reading run began
 
         // Larger structures
         std::priority_queue<TxCommand, std::vector<TxCommand>, FirstToSend> pending_tx_;
@@ -178,6 +184,7 @@ namespace secplus1 {
         LightState maybe_light_state { LightState::UNKNOWN };
         LockState maybe_lock_state { LockState::UNKNOWN };
         DoorState maybe_door_state { DoorState::UNKNOWN };
+        uint8_t door_reading_streak_ { 0 }; // consecutive identical door-status readings (capped)
         WallPanelEmulationState wall_panel_emulation_state_ { WallPanelEmulationState::WAITING };
         struct {
             uint8_t door_moving : 1;
