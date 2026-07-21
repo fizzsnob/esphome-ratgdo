@@ -69,6 +69,10 @@ esp32_improv:
   authorizer: none
 
 wifi:
+  # Mains-powered device: the ESP32 default LIGHT sleep naps the modem and
+  # starves the /events stream (field captures: 45-59s silent gaps tripping
+  # every SSE consumer's idle watchdog). Full power keeps the pings flowing.
+  power_save_mode: none
   ap:
     ssid: "ratgdo"
 
