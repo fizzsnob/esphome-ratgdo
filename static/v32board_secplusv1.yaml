@@ -21,7 +21,7 @@ esphome:
   min_version: 2026.4.0
   project:
     name: ratgdo.v32board_secplusv1
-    version: "34.6-personal"
+    version: "34.7-personal"
 
 esp32:
   board: esp32dev
