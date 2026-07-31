@@ -21,7 +21,7 @@ esphome:
   min_version: 2026.4.0
   project:
     name: ratgdo.v32board_secplusv1
-    version: "34.11-personal"
+    version: "34.12-personal"
   # Panel (889LM) is permanently wired on this install — never allow the
   # board to become a second transmitter on the Sec+1 bus (phantom-open
   # investigation, 2026-07-31).
@@ -157,10 +157,10 @@ wifi:
     - ssid: !secret wifi_ssid
       password: !secret wifi_password
       priority: 0
-  # Let the controller steer us (Ruckus SmartRoam/802.11v BSS transition)
-  # instead of camping on a stale association.
-  enable_btm: true
-  enable_rrm: true
+  # NOTE: enable_btm/enable_rrm were here briefly (v34.11) and are REMOVED —
+  # the board fell into a crash/instability loop minutes after first
+  # associating with the feature-rich Ruckus R710 at close range; 802.11v/k
+  # client code in this blob is a suspect. The BSSID pin does the job alone.
   ap:
     ssid: "ratgdo"
 
