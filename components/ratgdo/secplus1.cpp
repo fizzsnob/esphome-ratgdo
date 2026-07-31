@@ -786,6 +786,16 @@ namespace secplus1 {
 
     void Secplus1::transmit_byte(uint32_t value)
     {
+#ifdef RATGDO_RX_ONLY
+        // Diagnostic partition build: the board listens and logs but is
+        // incapable of putting a bit on the Sec+1 bus. If unattended door
+        // activity continues in this mode, the ratgdo is exonerated and the
+        // captured bus traffic shows what did it. No door/light/lock control
+        // works while this is compiled in — that is the point.
+        ESP_LOGW(TAG, "[RX-ONLY BUILD] suppressed TX of byte [%02X]", static_cast<uint8_t>(value));
+        this->last_tx_ = millis();
+        return;
+#endif
         bool enable_rx = (value == 0x38) || (value == 0x39) || (value == 0x3A);
         if (!enable_rx) {
             this->uart_.enableIntTx(false);

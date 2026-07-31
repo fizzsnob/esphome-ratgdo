@@ -21,7 +21,7 @@ esphome:
   min_version: 2026.4.0
   project:
     name: ratgdo.v32board_secplusv1
-    version: "34.10-personal"
+    version: "34.11-personal"
   # Panel (889LM) is permanently wired on this install — never allow the
   # board to become a second transmitter on the Sec+1 bus (phantom-open
   # investigation, 2026-07-31).
@@ -138,6 +138,29 @@ wifi:
   # starves the /events stream (field captures: 45-59s silent gaps tripping
   # every SSE consumer's idle watchdog). Full power keeps the pings flowing.
   power_save_mode: none
+  # AP steering: the board camps on a far AP (-77..-85 dBm) although a Ruckus
+  # R710 sits ~8 ft from the opener. That weak link drives the TX-retry storms
+  # behind both crash classes. Candidate BSSIDs for the near AP's 2.4 GHz
+  # radio are tried first (R710 base MAC 0c:f4:d5:0f:e9:b0; Ruckus derives
+  # per-WLAN BSSIDs from it — the far AP serves this SSID on ...f7:08, so the
+  # same +0x08 offset is the leading guess), then an UNPINNED entry so a wrong
+  # guess or a downed AP can never strand the board.
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      bssid: "0C:F4:D5:0F:E9:B8"
+      priority: 10
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      bssid: "0C:F4:D5:0F:E9:B0"
+      priority: 9
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      priority: 0
+  # Let the controller steer us (Ruckus SmartRoam/802.11v BSS transition)
+  # instead of camping on a stale association.
+  enable_btm: true
+  enable_rrm: true
   ap:
     ssid: "ratgdo"
 
