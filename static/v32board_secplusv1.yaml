@@ -21,7 +21,25 @@ esphome:
   min_version: 2026.4.0
   project:
     name: ratgdo.v32board_secplusv1
-    version: "34.7-personal"
+    version: "34.8-personal"
+  # Panel (889LM) is permanently wired on this install — never allow the
+  # board to become a second transmitter on the Sec+1 bus (phantom-open
+  # investigation, 2026-07-31).
+  platformio_options:
+    build_flags:
+      - "-DRATGDO_NO_EMULATION"
+
+# Reset-reason telemetry for the phantom-open investigation: distinguishes
+# brownout vs crash vs watchdog on every boot, queryable any time at
+# /text_sensor/reset_reason (the log-only boot banner is missed unless a
+# log client is attached at boot).
+debug:
+  update_interval: 60s
+
+text_sensor:
+  - platform: debug
+    reset_reason:
+      name: "Reset Reason"
 
 esp32:
   board: esp32dev

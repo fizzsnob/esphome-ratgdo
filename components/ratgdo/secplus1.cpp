@@ -154,8 +154,20 @@ namespace secplus1 {
                 return;
             }
             if (millis() - this->wall_panel_emulation_start_ > 60000 && !this->flags_.wall_panel_starting) {
+#ifdef RATGDO_NO_EMULATION
+                // This install has a wall panel permanently wired: never
+                // become a second transmitter on the bus, no matter how
+                // silent it is. A panel that boots slower than the window
+                // (889LM: 2-3 min) or reboots later just resumes feeding us
+                // status when it speaks; nothing here needs to run again.
+                // (Without this, RUNNING is permanent — no code path ever
+                // exits emulation short of a reboot.)
+                ESP_LOGW(TAG, "No wall panel heard after 60s — emulation DISABLED by build flag; waiting passively for the panel.");
+                return;
+#else
                 ESP_LOGD(TAG, "No wall panel detected. Switching to emulation mode.");
                 this->wall_panel_emulation_state_ = WallPanelEmulationState::RUNNING;
+#endif
             }
             this->scheduler_->set_timeout(this->ratgdo_, TIMEOUT_WALL_PANEL_EMULATION, 2000, [this] {
                 this->wall_panel_emulation();
