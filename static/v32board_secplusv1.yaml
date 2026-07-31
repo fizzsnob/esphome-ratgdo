@@ -21,13 +21,31 @@ esphome:
   min_version: 2026.4.0
   project:
     name: ratgdo.v32board_secplusv1
-    version: "34.9-personal"
+    version: "34.10-personal"
   # Panel (889LM) is permanently wired on this install — never allow the
   # board to become a second transmitter on the Sec+1 bus (phantom-open
   # investigation, 2026-07-31).
   platformio_options:
     build_flags:
       - "-DRATGDO_NO_EMULATION"
+    # lwIP defensive guard: crash #2 (LoadStoreError in lwip_standard_chksum
+    # during RTO retransmit) walks a corrupted pbuf; the guard validates the
+    # chain and drops the segment instead of crashing (one connection dies,
+    # not the board). Anchored patcher, idempotent, re-applies after
+    # framework package updates.
+    extra_scripts:
+      - pre:/Users/michaelbell/esphome-patches/apply_lwip_guard.py
+  # Park the Sec+1 TX pin (GPIO17, inverted soft-UART: idle/released = LOW)
+  # in the first moments of firmware life — shrinks the app-phase float
+  # window after a crash reboot. The ROM/bootloader-phase window remains
+  # (hardware-level; under investigation).
+  on_boot:
+    priority: 1000
+    then:
+      - lambda: |-
+          gpio_reset_pin(GPIO_NUM_17);
+          gpio_set_direction(GPIO_NUM_17, GPIO_MODE_OUTPUT);
+          gpio_set_level(GPIO_NUM_17, 0);
 
 # Reset-reason telemetry for the phantom-open investigation: distinguishes
 # brownout vs crash vs watchdog on every boot, queryable any time at
@@ -40,6 +58,27 @@ text_sensor:
   - platform: debug
     reset_reason:
       name: "Reset Reason"
+  - platform: wifi_info
+    bssid:
+      name: "WiFi BSSID"
+    ssid:
+      name: "WiFi SSID"
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 120s
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+  - platform: debug
+    free:
+      name: "Heap Free"
+    block:
+      name: "Heap Max Block"
+  - platform: internal_temperature
+    name: "Chip Temperature"
+    update_interval: 60s
 
 esp32:
   board: esp32dev
@@ -53,6 +92,11 @@ esp32:
     # throughput cost is irrelevant for this device.
     sdkconfig_options:
       CONFIG_ESP_WIFI_AMPDU_TX_ENABLED: "n"
+      # Heap poisoning: both crash classes point at TX-buffer/heap corruption
+      # under retransmission churn. Comprehensive poisoning makes the NEXT
+      # corruption crash name its culprit (poisoned-block owner) instead of
+      # detonating in an innocent victim like lwIP's checksum loop.
+      CONFIG_HEAP_POISONING_COMPREHENSIVE: "y"
 
 dashboard_import:
   package_import_url: github://ratgdo/esphome-ratgdo/v32board_secplusv1.yaml@main
@@ -75,11 +119,6 @@ switch:
       ignore_strapping_warning: true
     name: "LED"
     entity_category: config
-
-sensor:
-  - platform: wifi_signal
-    name: "WiFi Signal"
-    update_interval: 120s
 
 # Sync time with Home Assistant.
 time:
