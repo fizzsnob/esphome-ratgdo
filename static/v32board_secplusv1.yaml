@@ -21,7 +21,7 @@ esphome:
   min_version: 2026.4.0
   project:
     name: ratgdo.v32board_secplusv1
-    version: "34.8-personal"
+    version: "34.9-personal"
   # Panel (889LM) is permanently wired on this install — never allow the
   # board to become a second transmitter on the Sec+1 bus (phantom-open
   # investigation, 2026-07-31).
@@ -45,6 +45,14 @@ esp32:
   board: esp32dev
   framework:
     type: esp-idf
+    # Phantom-open root cause (2026-07-31): LoadProhibited crashes inside the
+    # Wi-Fi blob's TX-error/AMPDU path (ppAMPDU2Normal via lmacProcessTxError),
+    # triggered by heavy TX-retry load after power_save_mode:none (2026-07-20).
+    # Each crash-reboot can glitch the Sec+1 wall-control line -> the opener
+    # reads a phantom button press. AMPDU TX off removes the crashing path;
+    # throughput cost is irrelevant for this device.
+    sdkconfig_options:
+      CONFIG_ESP_WIFI_AMPDU_TX_ENABLED: "n"
 
 dashboard_import:
   package_import_url: github://ratgdo/esphome-ratgdo/v32board_secplusv1.yaml@main
