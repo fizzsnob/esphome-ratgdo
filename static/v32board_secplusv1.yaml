@@ -21,7 +21,7 @@ esphome:
   min_version: 2026.4.0
   project:
     name: ratgdo.v32board_secplusv1
-    version: "34.12-personal"
+    version: "35.0-personal"
   # Panel (889LM) is permanently wired on this install — never allow the
   # board to become a second transmitter on the Sec+1 bus (phantom-open
   # investigation, 2026-07-31).
