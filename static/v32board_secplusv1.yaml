@@ -21,7 +21,7 @@ esphome:
   min_version: 2026.4.0
   project:
     name: ratgdo.v32board_secplusv1
-    version: "35.3-personal"
+    version: "35.4-personal"
   # Panel (889LM) is permanently wired on this install — never allow the
   # board to become a second transmitter on the Sec+1 bus (phantom-open
   # investigation, 2026-07-31).
@@ -127,6 +127,12 @@ time:
 
 api:
   id: api_server
+  # No Home Assistant in this installation: the RTI driver uses REST, so no
+  # native-API client is ever connected. The default 15-min reboot_timeout
+  # therefore self-rebooted the board every 15 minutes whenever no esphome
+  # log client was attached (discovered 2026-08-02: uptime 10min, reset
+  # reason "Reboot request from api", nobody home). Disable it.
+  reboot_timeout: 0s
 
 improv_serial:
 
